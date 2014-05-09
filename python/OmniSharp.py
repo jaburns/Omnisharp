@@ -10,7 +10,7 @@ log_dir = os.path.join(vim.eval('expand("<sfile>:p:h")'), '..', 'log')
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 hdlr = logging.FileHandler(os.path.join(log_dir, 'python.log'))
-logger.addHandler(hdlr) 
+logger.addHandler(hdlr)
 
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 hdlr.setFormatter(formatter)
@@ -108,7 +108,7 @@ def findImplementations(ret):
     if(js != ''):
         usages = json.loads(js)['QuickFixes']
 
-        command_base = ("add(" + ret + 
+        command_base = ("add(" + ret +
                 ", {'filename': '%(FileName)s', 'lnum': '%(Line)s', 'col': '%(Column)s'})")
         if(len(usages) == 1):
             usage = usages[0]
@@ -128,7 +128,7 @@ def gotoDefinition():
         filename = definition['FileName']
         if(filename != None):
             if(filename != vim.current.buffer.name):
-                vim.command('e ' + definition['FileName'])
+                vim.command('e! ' + definition['FileName'])
             #row is 1 based, column is 0 based
             vim.current.window.cursor = (definition['Line'], definition['Column'] - 1 )
 
@@ -179,12 +179,12 @@ def typeLookup(ret):
         if(documentation == None):
             documentation = ''
         if(type != None):
-            vim.command("let %s = '%s'" % (ret, type)) 
-            vim.command("let s:documentation = '%s'" % documentation) 
+            vim.command("let %s = '%s'" % (ret, type))
+            vim.command("let s:documentation = '%s'" % documentation)
 
 def renameTo(renameTo):
-    parameters = {} 
-    parameters['renameto'] = vim.eval("a:renameto") 
+    parameters = {}
+    parameters['renameto'] = vim.eval("a:renameto")
     js = getResponse('/rename', parameters)
     response = json.loads(js)
     changes = response['Changes']
@@ -221,7 +221,7 @@ def build(ret):
     populateQuickFix(ret, quickfixes)
 
 def buildcommand():
-    vim.command("let b:buildcommand = '%s'" % getResponse('/buildcommand')) 
+    vim.command("let b:buildcommand = '%s'" % getResponse('/buildcommand'))
 
 def codeFormat():
     parameters = {}
