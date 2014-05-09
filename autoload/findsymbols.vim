@@ -42,11 +42,7 @@ call add(g:ctrlp_ext_vars, {
 	\ 'lname': 'Find Symbols',
 	\ 'sname': 'symbols',
 	\ 'type': 'tabs',
-	\ 'enter': 'findsymbols#enter()',
-	\ 'exit': 'findsymbols#exit()',
-	\ 'opts': 'findsymbols#opts()',
 	\ 'sort': 1,
-	\ 'specinput': 0,
 	\ })
 
 
@@ -59,7 +55,7 @@ function! findsymbols#init()
 		return
 	endif
 
-	python findSymbols()
+	let s:quickfixes = pyeval("findSymbols()")
 	let symbols = []
 	for quickfix in s:quickfixes
 		call add(symbols, quickfix.text)
@@ -76,30 +72,15 @@ endfunction
 "  a:str    the selected string
 "
 function! findsymbols#accept(mode, str)
+  call ctrlp#exit()
 	for quickfix in s:quickfixes
 		if quickfix.text == a:str
-			call  OmniSharp#JumpToLocation(quickfix.filename, quickfix.lnum, quickfix.col)
 			break
 		endif
 	endfor
-	call findsymbols#exit()
+  echo quickfix.filename
+	call  OmniSharp#JumpToLocation(quickfix.filename, quickfix.lnum, quickfix.col)
 endfunction
-
-
-" (optional) Do something before enterting ctrlp
-function! findsymbols#enter()
-endfunction
-
-
-" (optional) Do something after exiting ctrlp
-function! findsymbols#exit()
-endfunction
-
-
-" (optional) Set or check for user options specific to this extension
-function! findsymbols#opts()
-endfunction
-
 
 " Give the extension an ID
 let s:id = g:ctrlp_builtins + len(g:ctrlp_ext_vars)

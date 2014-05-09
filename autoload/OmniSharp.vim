@@ -4,6 +4,10 @@ set cpo&vim
 let s:omnisharp_server = join([expand('<sfile>:p:h:h'), 'server', 'OmniSharp', 'bin', 'Debug', 'OmniSharp.exe'], '/')
 let s:allUserTypes = ''
 let s:allUserInterfaces = ''
+let g:serverSeenRunning = 0
+let g:codeactionsinprogress = 0
+let b:issues = [] 
+let b:syntaxerrors = [] 
 
 function! OmniSharp#Complete(findstart, base)
 	if a:findstart
@@ -19,18 +23,12 @@ function! OmniSharp#Complete(findstart, base)
 
 		return start
 	else
-		let words=[]
-		python getCompletions("words", "s:column", "a:base")
-		if len(words) == 0
-			return -3
-		endif
-		return words
+		return pyeval('Completion().get_completions("s:column", "a:base")')
 	endif
 endfunction
 
 function! OmniSharp#FindUsages()
-	let qf_taglist = []
-	python findUsages("qf_taglist")
+	let qf_taglist = pyeval('findUsages()')
 
 	" Place the tags in the quickfix window, if possible
 	if len(qf_taglist) > 0
@@ -42,10 +40,17 @@ function! OmniSharp#FindUsages()
 endfunction
 
 function! OmniSharp#FindImplementations()
-	let qf_taglist = []
-	python findImplementations("qf_taglist")
+	let qf_taglist = pyeval("findImplementations()")
 
-	" Place the tags in the quickfix window, if possible
+	if len(qf_taglist) == 0
+        echo "No implementations found"
+    endif 
+
+	if len(qf_taglist) == 1
+        let usage = qf_taglist[0]
+        call OmniSharp#JumpToLocation(usage.filename, usage.lnum, usage.col)
+    endif
+
 	if len(qf_taglist) > 1
 		call setqflist(qf_taglist)
 		copen 4
@@ -53,8 +58,7 @@ function! OmniSharp#FindImplementations()
 endfunction
 
 function! OmniSharp#FindMembers()
-	let qf_taglist = []
-	python findMembers("qf_taglist")
+	let qf_taglist = pyeval("findMembers()")
 
 	" Place the tags in the quickfix window, if possible
 	if len(qf_taglist) > 1
@@ -68,46 +72,62 @@ function! OmniSharp#GotoDefinition()
 endfunction
 
 function! OmniSharp#JumpToLocation(filename, line, column)
-	if a:filename != bufname('%')
-		exec 'e ' . a:filename
-	endif
-	"row is 1 based, column is 0 based
-	call cursor(a:line, a:column)
+    if(a:filename != '')
+        if a:filename != bufname('%')
+            exec 'e! ' . fnameescape(a:filename)
+        endif
+        "row is 1 based, column is 0 based
+        call cursor(a:line, a:column)
+    endif
 endfunction
 
-function! OmniSharp#GetCodeActions()
-	let actions = []
-	python actions = getCodeActions()
-	python if actions == False: vim.command("return 0")
+function! OmniSharp#GetCodeActions(mode)
+    " I can't figure out how to prevent this method
+    " being called multiple times for each line in
+    " the visual selection. This is a workaround.
+    if g:codeactionsinprogress == 1
+        return
+    endif
+    let actions = pyeval('getCodeActions("' . a:mode . '")')
+    if(len(actions) > 0)
+        call findcodeactions#setactions(a:mode, actions)
+        call ctrlp#init(findcodeactions#id())
+    else
+        echo 'No code actions found'
+    endif
+endfunction
 
-	let option=nr2char(getchar())
-	if option < '0' || option > '9'
-		return 1
-	endif
+function! OmniSharp#GetIssues()
+    if pumvisible()
+        return b:issues
+    endif
+	if g:serverSeenRunning == 1
+        let b:issues = pyeval("getCodeIssues()")
+    endif
+    return b:issues
+endfunction
 
-	python runCodeAction("option")
+function! OmniSharp#FixIssue()
+	python fixCodeIssue()
 endfunction
 
 function! OmniSharp#FindSyntaxErrors()
+    if pumvisible()
+        return b:syntaxerrors
+    endif
 	if bufname('%') == ''
 		return
 	endif
-	let loc_taglist = []
-	python findSyntaxErrors("loc_taglist")
-
-	" Place the tags in the location-list window, if possible
-	if len(loc_taglist) > 0
-		call setloclist(0, loc_taglist)
-		lopen 4
-	else
-		lclose
-	endif
+	if g:serverSeenRunning == 1
+        let b:syntaxerrors = pyeval("findSyntaxErrors()")
+    endif
+    return b:syntaxerrors
 endfunction
 
 " Jump to first scratch window visible in current tab, or create it.
 " This is useful to accumulate results from successive operations.
 " Global function that can be called from other scripts.
-function! GoScratch()
+function! s:GoScratch()
   let done = 0
   for i in range(1, winnr('$'))
     execute i . 'wincmd w'
@@ -122,38 +142,62 @@ function! GoScratch()
   endif
 endfunction
 
-function! OmniSharp#TypeLookup()
-	let type = ""
-	python typeLookup("type")
 
-	if g:OmniSharp_typeLookupInPreview
-		call GoScratch()
+function! OmniSharp#TypeLookupWithoutDocumentation()
+	if g:serverSeenRunning == 1
+		call OmniSharp#TypeLookup('False')
+	endif
+endfunction
+
+function! OmniSharp#TypeLookupWithDocumentation()
+	call OmniSharp#TypeLookup('True')
+endfunction
+
+function! OmniSharp#TypeLookup(includeDocumentation)
+	let type = ""
+
+	if g:OmniSharp_typeLookupInPreview || a:includeDocumentation == 'True'
+        python typeLookup("type")
+		call s:GoScratch()
 		python vim.current.window.height = 5
 		set modifiable
 		exec 'python vim.current.buffer[:] = ["' . type . '"] + """' . s:documentation . '""".splitlines()'
 		set nomodifiable
 		"Return to original window
 		wincmd p
-	else
-		echo type
+    else
+		let line = line('.')
+        let found_line_in_loc_list = 0
+        if exists(':SyntasticCheck')
+            SyntasticSetLoclist
+            for issue in getloclist(0)
+                if(issue['lnum'] == line)
+                    let found_line_in_loc_list = 1
+                    break
+                endif
+            endfor
+        endif
+        if(found_line_in_loc_list == 0)
+            python typeLookup("type")
+            echo type
+        endif
 	endif
 endfunction
 
 function! OmniSharp#Rename()
-	let a:renameto = inputdialog("Rename to:", expand('<cword>'))
-	if a:renameto != ''
-		call OmniSharp#RenameTo(a:renameto)
+	let renameto = inputdialog("Rename to:", expand('<cword>'))
+	if renameto != ''
+		call OmniSharp#RenameTo(renameto)
 	endif
 endfunction
 
 function! OmniSharp#RenameTo(renameto)
 	let qf_taglist = []
-	python renameTo(renameTo)
+	python renameTo()
 endfunction
 
 function! OmniSharp#Build()
-	let qf_taglist = []
-	python build("qf_taglist")
+    let qf_taglist = pyeval("build()")
 
 	" Place the tags in the quickfix window, if possible
 	if len(qf_taglist) > 0
@@ -163,10 +207,27 @@ function! OmniSharp#Build()
 endfunction
 
 function! OmniSharp#BuildAsync()
-	python buildcommand()
+    python buildcommand()
+    let &l:makeprg=b:buildcommand
 	setlocal errorformat=\ %#%f(%l\\\,%c):\ %m
-	let &l:makeprg=b:buildcommand
+    echo &l:makeprg
 	Make
+endfunction
+
+function! OmniSharp#RunTests(mode)
+	write 
+	python buildcommand()
+
+	if a:mode != 'last'
+		python getTestCommand()
+	endif
+
+    if exists("g:tmux_sessionname") && exists("g:tmux_windowname") && exists("g:tmux_panenumber")
+		silent! call Send_to_Tmux(b:buildcommand . " && " . s:testcommand . "\<cr>")
+	else
+		call Send_to_Tmux(b:buildcommand . " && " . s:testcommand . "\<cr>")
+	endif
+
 endfunction
 
 function! OmniSharp#EnableTypeHighlightingForBuffer()
@@ -200,22 +261,26 @@ function! OmniSharp#ReloadSolution()
 	python getResponse("/reloadsolution")
 endfunction
 
+function! OmniSharp#UpdateBuffer()
+	if g:serverSeenRunning == 1
+        if b:changedtick != get(b:, "Omnisharp_UpdateChangeTick", -1)
+            python getResponse("/updatebuffer")
+            let b:Omnisharp_UpdateChangeTick = b:changedtick
+        endif
+	endif
+endfunction
+
 function! OmniSharp#CodeFormat()
 	python codeFormat()
 endfunction
 
 function! OmniSharp#ServerIsRunning()
-	let port = matchstr(g:OmniSharp_host,'[0-9]\+$')
-	if has('win32') || has('win32unix')
-		let lockfilename = fnamemodify(s:omnisharp_server, ':p:h') . '/lockfile-' . port
-		" If lockfile is present, and locked (and thus not readable)
-		" the server is running
-		return glob(lockfilename) != "" && !filereadable(lockfilename)
-	else
-		let cmd='ps ax | grep "OmniSharp.exe -p ' . port . '" | grep -v "grep" | wc -l | tr -d " "'
-		let isrunning=system(cmd)
-		return isrunning > 0
-	endif
+	try
+		python vim.command("let s:alive = '" + getResponse("/checkalivestatus", None, 0.2) + "'");
+		return s:alive == 'true'
+	catch
+		return 0
+	endtry
 endfunction
 
 function! OmniSharp#StartServerIfNotRunning()
@@ -242,7 +307,7 @@ function! OmniSharp#StartServer()
 
 	"get the path for the current buffer
 	let folder = expand('%:p:h')
-	let solutionfiles = globpath(folder, "*.sln")
+	let solutionfiles = globpath(folder, "*.sln", 1)
 
 	while (solutionfiles == '')
 		let lastfolder = folder
@@ -252,7 +317,7 @@ function! OmniSharp#StartServer()
 		if folder == lastfolder
 			break
 		endif
-		let solutionfiles = globpath(folder , "*.sln")
+		let solutionfiles = globpath(folder , "*.sln", 1)
 	endwhile
 
 	if solutionfiles != ''
@@ -300,7 +365,7 @@ function! OmniSharp#StartServerSolution(solutionPath)
 
 	let g:OmniSharp_running_slns += [a:solutionPath]
 	let port = exists('b:OmniSharp_port') ? b:OmniSharp_port : g:OmniSharp_port
-	let command = shellescape(s:omnisharp_server,1) . ' -p ' . port . ' -s ' . fnamemodify(a:solutionPath, ':8')
+	let command = shellescape(s:omnisharp_server,1) . ' -p ' . port . ' -s ' . shellescape(a:solutionPath, 1)
 	if !has('win32') && !has('win32unix')
 		let command = 'mono ' . command
 	endif
@@ -310,13 +375,13 @@ endfunction
 function! OmniSharp#RunAsyncCommand(command)
 	let is_vimproc = 0
 	silent! let is_vimproc = vimproc#version()
-	if is_vimproc
-		call vimproc#system_gui(substitute(a:command, '\\', '\/', 'g'))
+	if exists(':Make')
+		call dispatch#start(a:command, {'background': 1})
 	else
-		if exists(':Make')
-			call dispatch#start(a:command, {'background': 1})
+		if is_vimproc
+			call vimproc#system_gui(substitute(a:command, '\\', '\/', 'g'))
 		else
-			echoerr 'Please install vim-dispatch or vimproc plugin to use this feature'
+			echoerr 'Please install either vim-dispatch or vimproc plugin to use this feature'
 		endif
 	endif
 endfunction
@@ -364,7 +429,7 @@ function! OmniSharp#AppendCtrlPExtensions()
 	endif
 	if !exists("g:OmniSharp_ctrlp_extensions_added")
 		let g:OmniSharp_ctrlp_extensions_added = 1
-		let g:ctrlp_extensions += ['findtype', 'findsymbols']
+		let g:ctrlp_extensions += ['findtype', 'findsymbols', 'findcodeactions']
 	endif
 endfunction
 

@@ -2,16 +2,20 @@ if exists("g:OmniSharp_loaded")
 	finish
 endif
 
+let g:OmniSharp_loaded = 1
+
 augroup OmniSharpCtrlP
 	au!
 	au FileType cs call OmniSharp#AppendCtrlPExtensions()
 augroup END
 
-let g:OmniSharp_loaded = 1
 
 "Load python/OmniSharp.py
-let s:py_path = join([expand('<sfile>:p:h:h'), "python", "OmniSharp.py"], '/')
-exec "pyfile " . fnameescape(s:py_path)
+let s:py_path = join([expand('<sfile>:p:h:h'), "python"], '/')
+exec "python sys.path.append(r'" . s:py_path . "')"
+exec "pyfile " . fnameescape(s:py_path . '/Completion.py')
+exec "pyfile " . fnameescape(s:py_path . '/OmniSharp.py')
+
 
 let g:OmniSharp_port = get(g:, 'OmniSharp_port', 2000)
 
